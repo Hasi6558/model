@@ -29,9 +29,24 @@ image_size = (64, 64)  # Define image_size here
 
 # Crop Configuration (as percentages of image dimensions for portability)
 # Format: (x_start%, y_start%, x_end%, y_end%) where 0.0 = 0% and 1.0 = 100%
-CROP_REGION = (0.25, 0.25, 0.75, 0.75)  # Center 50% of image
-# Examples:
+
+# Center crop for 241x269 pixels (assuming 640x480 camera resolution)
+# For 640x480 resolution: 241/640 = 0.3766, 269/480 = 0.5604
+# Center position: x_center = 0.5, y_center = 0.5
+# x_start = 0.5 - (241/640)/2 = 0.5 - 0.1883 = 0.3117
+# x_end = 0.5 + (241/640)/2 = 0.5 + 0.1883 = 0.6883
+# y_start = 0.5 - (269/480)/2 = 0.5 - 0.2802 = 0.2198
+# y_end = 0.5 + (269/480)/2 = 0.5 + 0.2802 = 0.7802
+CROP_REGION = (0.3117, 0.2198, 0.6883, 0.7802)  # Center 241x269 pixels for 640x480
+
+# Alternative crop regions for different camera resolutions:
+# For 1280x720 (HD): (0.4059, 0.3132, 0.5941, 0.6868)  # Center 241x269
+# For 1920x1080 (FHD): (0.4372, 0.3755, 0.5628, 0.6245)  # Center 241x269
+# For 800x600: (0.2994, 0.1758, 0.7006, 0.8242)  # Center 241x269
+
+# Examples of other crop regions:
 # (0.0, 0.0, 1.0, 1.0) = Full image (no crop)
+# (0.25, 0.25, 0.75, 0.75) = Center 50% of image
 # (0.3, 0.2, 0.8, 0.7) = Custom region
 # (0.4, 0.4, 0.6, 0.6) = Small center region
 
