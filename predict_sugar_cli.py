@@ -65,11 +65,14 @@ class DisplayManager:
                 # Initialize ST7735 display for Raspberry Pi 5 with Enviro Plus
                 self.disp = st7735.ST7735(
                     port=0,
-                    cs=st7735.BG_SPI_CS_FRONT,  # BG_SPI_CS_FRONT for Enviro Plus
-                    dc="PIN21",                 # PIN21 for Pi 5 with Enviro Plus
-                    backlight="PIN32",          # PIN32 for Pi 5 with Enviro Plus
+                    cs=0,  # BG_SPI_CS_FRONT for Enviro Plus
+                    dc=24,                 # PIN21 for Pi 5 with Enviro Plus
+                    backlight=None,          # PIN32 for Pi 5 with Enviro Plus
+                    rst=25,
+                    width=128,
+                    height=160,
                     rotation=90,
-                    spi_speed_hz=4000000
+                    invert=False
                 )
                 self.disp.begin()
                 self.width = self.disp.width
