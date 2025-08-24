@@ -27,6 +27,14 @@ base_dir = os.path.dirname(os.path.abspath(__file__))
 model_path = os.path.join(base_dir, 'hsv_baseline_all_images.keras')
 image_size = (64, 64)  # Define image_size here
 
+# Crop Configuration (as percentages of image dimensions for portability)
+# Format: (x_start%, y_start%, x_end%, y_end%) where 0.0 = 0% and 1.0 = 100%
+CROP_REGION = (0.25, 0.25, 0.75, 0.75)  # Center 50% of image
+# Examples:
+# (0.0, 0.0, 1.0, 1.0) = Full image (no crop)
+# (0.3, 0.2, 0.8, 0.7) = Custom region
+# (0.4, 0.4, 0.6, 0.6) = Small center region
+
 # GPIO Configuration
 BUTTON_PIN = 17  # GPIO pin for the push button (change as needed)
 button_pressed = False
@@ -71,6 +79,83 @@ def cleanup_gpio():
             pass
 
 
+def crop_image(image, crop_region=CROP_REGION):
+    """
+    Crop image based on percentage coordinates
+    
+    Args:
+        image: OpenCV image (numpy array)
+        crop_region: tuple (x_start%, y_start%, x_end%, y_end%)
+                    where each value is between 0.0 and 1.0
+    
+    Returns:
+        Cropped image and crop coordinates for display
+    """
+    height, width = image.shape[:2]
+    
+    # Convert percentage to pixel coordinates
+    x_start = int(crop_region[0] * width)
+    y_start = int(crop_region[1] * height)
+    x_end = int(crop_region[2] * width)
+    y_end = int(crop_region[3] * height)
+    
+    # Ensure coordinates are within image bounds
+    x_start = max(0, min(x_start, width-1))
+    y_start = max(0, min(y_start, height-1))
+    x_end = max(x_start+1, min(x_end, width))
+    y_end = max(y_start+1, min(y_end, height))
+    
+    # Crop the image
+    cropped_image = image[y_start:y_end, x_start:x_end]
+    
+    # Return cropped image and coordinates for overlay
+    crop_coords = (x_start, y_start, x_end, y_end)
+    
+    return cropped_image, crop_coords
+
+
+def draw_crop_overlay(image, crop_coords):
+    """
+    Draw crop region overlay on the original image for display
+    
+    Args:
+        image: Original image to draw on
+        crop_coords: tuple (x_start, y_start, x_end, y_end) in pixels
+    
+    Returns:
+        Image with crop overlay
+    """
+    overlay_img = image.copy()
+    x_start, y_start, x_end, y_end = crop_coords
+    
+    # Draw crop rectangle
+    cv2.rectangle(overlay_img, (x_start, y_start), (x_end, y_end), (0, 255, 0), 2)
+    
+    # Add corner markers
+    corner_size = 10
+    # Top-left corner
+    cv2.line(overlay_img, (x_start, y_start), (x_start + corner_size, y_start), (0, 255, 0), 3)
+    cv2.line(overlay_img, (x_start, y_start), (x_start, y_start + corner_size), (0, 255, 0), 3)
+    
+    # Top-right corner
+    cv2.line(overlay_img, (x_end, y_start), (x_end - corner_size, y_start), (0, 255, 0), 3)
+    cv2.line(overlay_img, (x_end, y_start), (x_end, y_start + corner_size), (0, 255, 0), 3)
+    
+    # Bottom-left corner
+    cv2.line(overlay_img, (x_start, y_end), (x_start + corner_size, y_end), (0, 255, 0), 3)
+    cv2.line(overlay_img, (x_start, y_end), (x_start, y_end - corner_size), (0, 255, 0), 3)
+    
+    # Bottom-right corner
+    cv2.line(overlay_img, (x_end, y_end), (x_end - corner_size, y_end), (0, 255, 0), 3)
+    cv2.line(overlay_img, (x_end, y_end), (x_end, y_end - corner_size), (0, 255, 0), 3)
+    
+    # Add crop region label
+    cv2.putText(overlay_img, "CROP REGION", (x_start, y_start - 10), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    
+    return overlay_img
+
+
 class SugarPredictor:
     def __init__(self, model_path):
         """Initialize the sugar level predictor"""
@@ -97,11 +182,33 @@ class SugarPredictor:
         
         return img_batch
     
-    def predict_sugar_level(self, img):
-        """Predict sugar level from image"""
-        processed_img = self.preprocess_image(img)
-        prediction = self.model.predict(processed_img, verbose=0)
-        return prediction[0][0]
+    def predict_sugar_level(self, img, use_crop=True, crop_region=CROP_REGION):
+        """
+        Predict sugar level from image
+        
+        Args:
+            img: Input image (BGR format)
+            use_crop: Whether to crop the image before prediction
+            crop_region: Crop region as (x_start%, y_start%, x_end%, y_end%)
+        
+        Returns:
+            prediction: Sugar level prediction
+            processed_img: The actual image used for prediction (for display)
+            crop_coords: Crop coordinates if cropping was used
+        """
+        processed_img = img.copy()
+        crop_coords = None
+        
+        if use_crop:
+            # Crop the image
+            processed_img, crop_coords = crop_image(img, crop_region)
+            print(f"📐 Using cropped region: {crop_region} -> {crop_coords}")
+        
+        # Preprocess and predict
+        img_preprocessed = self.preprocess_image(processed_img)
+        prediction = self.model.predict(img_preprocessed, verbose=0)
+        
+        return prediction[0][0], processed_img, crop_coords
 
 
 class DisplayManager:
@@ -132,15 +239,38 @@ class DisplayManager:
                 print(f"⚠️ Failed to initialize display: {e}")
                 self.display_available = False
     
-    def show_image_and_prediction(self, cv_image, sugar_level):
-        """Display captured image and prediction on ST7735 screen"""
+    def show_image_and_prediction(self, cv_image, sugar_level, processed_img=None, crop_coords=None, show_original=False):
+        """
+        Display captured image and prediction on ST7735 screen
+        
+        Args:
+            cv_image: Original captured image
+            sugar_level: Predicted sugar level
+            processed_img: Processed/cropped image used for prediction
+            crop_coords: Crop coordinates if cropping was used
+            show_original: If True, show original with crop overlay; if False, show processed image
+        """
         if not self.display_available or self.disp is None:
             print(f"📺 Display not available - Sugar Level: {sugar_level:.2f}")
             return
         
         try:
+            # Choose which image to display
+            if show_original and crop_coords is not None:
+                # Show original image with crop overlay
+                display_source = draw_crop_overlay(cv_image, crop_coords)
+                image_info = "Original + Crop Overlay"
+            elif processed_img is not None:
+                # Show the processed/cropped image
+                display_source = processed_img
+                image_info = "Cropped Image"
+            else:
+                # Fallback to original image
+                display_source = cv_image
+                image_info = "Original Image"
+            
             # Convert CV2 image (BGR) to PIL image (RGB) - Fix color channel order
-            rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
+            rgb_image = cv2.cvtColor(display_source, cv2.COLOR_BGR2RGB)
             pil_image = Image.fromarray(rgb_image)
             
             # Create display image
@@ -148,7 +278,7 @@ class DisplayManager:
             draw = ImageDraw.Draw(display_img)
             
             # Calculate image display area (top 2/3 of screen)
-            img_display_height = int(self.height * 0.65)
+            img_display_height = int(self.height * 0.6)
             img_display_width = self.width
             
             # Resize captured image to fit display area
@@ -167,13 +297,14 @@ class DisplayManager:
             # Load default font
             try:
                 # Try to load a larger font if available
-                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+                small_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
             except:
                 font = ImageFont.load_default()
+                small_font = ImageFont.load_default()
             
             # Add text overlay for sugar level (bottom 1/3 of screen)
-            text_y = img_display_height + 10
-            text_area_height = self.height - img_display_height
+            text_y = img_display_height + 5
             
             # Background for text
             draw.rectangle([0, img_display_height, self.width, self.height], fill=(0, 0, 0))
@@ -184,21 +315,30 @@ class DisplayManager:
             text_width = text_bbox[2] - text_bbox[0]
             text_x = (self.width - text_width) // 2
             
-            # Green color corrected for R/B swap: (0, 255, 0) becomes (0, 255, 0) - stays same
+            # Green color corrected for R/B swap
             draw.text((text_x, text_y), sugar_text, font=font, fill=(0, 255, 0))
             
-            # Status text - white should remain white
+            # Image type indicator
+            type_text = image_info
+            type_bbox = draw.textbbox((0, 0), type_text, font=small_font)
+            type_width = type_bbox[2] - type_bbox[0]
+            type_x = (self.width - type_width) // 2
+            type_y = text_y + 20
+            
+            draw.text((type_x, type_y), type_text, font=small_font, fill=(255, 255, 255))
+            
+            # Status text
             status_text = "Analysis Complete"
-            status_bbox = draw.textbbox((0, 0), status_text, font=font)
+            status_bbox = draw.textbbox((0, 0), status_text, font=small_font)
             status_width = status_bbox[2] - status_bbox[0]
             status_x = (self.width - status_width) // 2
-            status_y = text_y + 25
+            status_y = type_y + 15
             
-            draw.text((status_x, status_y), status_text, font=font, fill=(255, 255, 255))
+            draw.text((status_x, status_y), status_text, font=small_font, fill=(255, 255, 255))
             
             # Display on screen
             self.disp.display(display_img)
-            print(f"📺 Image and prediction displayed on ST7735: {sugar_level:.2f}")
+            print(f"📺 {image_info} and prediction displayed on ST7735: {sugar_level:.2f}")
             
         except Exception as e:
             print(f"❌ Error displaying on ST7735: {e}")
@@ -300,7 +440,23 @@ def main():
     parser.add_argument('--save-image', action='store_true', help='Save captured image')
     parser.add_argument('--auto-mode', action='store_true', help='Use automatic countdown instead of button')
     parser.add_argument('--single-shot', action='store_true', help='Run once and exit (default is continuous loop)')
+    parser.add_argument('--no-crop', action='store_true', help='Disable image cropping')
+    parser.add_argument('--show-original', action='store_true', help='Show original image with crop overlay on display')
+    parser.add_argument('--crop-region', type=str, help='Crop region as "x1,y1,x2,y2" (percentages 0.0-1.0)')
     args = parser.parse_args()
+    
+    # Parse custom crop region if provided
+    crop_region = CROP_REGION
+    if args.crop_region:
+        try:
+            coords = [float(x.strip()) for x in args.crop_region.split(',')]
+            if len(coords) != 4 or any(c < 0.0 or c > 1.0 for c in coords):
+                raise ValueError("Invalid coordinates")
+            crop_region = tuple(coords)
+            print(f"📐 Using custom crop region: {crop_region}")
+        except ValueError:
+            print("⚠️ Invalid crop region format. Using default.")
+            print("   Format: --crop-region 'x1,y1,x2,y2' (e.g., '0.25,0.25,0.75,0.75')")
     
     # Global variable to track button press
     global button_pressed
@@ -327,6 +483,13 @@ def main():
             return
         
         print("✅ Camera initialized successfully!")
+        
+        # Display crop settings
+        if not args.no_crop:
+            print(f"📐 Crop region: {crop_region} (x1%, y1%, x2%, y2%)")
+            print(f"📺 Display mode: {'Original + Overlay' if args.show_original else 'Cropped Image'}")
+        else:
+            print("📐 Cropping disabled - using full image")
         
         # Determine if running in continuous loop or single shot
         continuous_mode = not args.single_shot
@@ -399,16 +562,26 @@ def main():
                     time.sleep(2)
                     continue
                 
-                # Save image if requested
+                # Save original image if requested
                 if args.save_image:
                     timestamp = time.strftime("%Y%m%d_%H%M%S")
-                    image_filename = f"captured_sample_{timestamp}.jpg"
-                    cv2.imwrite(image_filename, frame)
-                    print(f"💾 Image saved as: {image_filename}")
+                    original_filename = f"original_{timestamp}.jpg"
+                    cv2.imwrite(original_filename, frame)
+                    print(f"💾 Original image saved as: {original_filename}")
                 
-                # Predict sugar level
+                # Predict sugar level with or without cropping
                 print("🔍 Analyzing image...")
-                sugar_level = predictor.predict_sugar_level(frame)
+                use_crop = not args.no_crop
+                sugar_level, processed_img, crop_coords = predictor.predict_sugar_level(
+                    frame, use_crop=use_crop, crop_region=crop_region
+                )
+                
+                # Save processed image if requested
+                if args.save_image and processed_img is not None and use_crop:
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    processed_filename = f"cropped_{timestamp}.jpg"
+                    cv2.imwrite(processed_filename, processed_img)
+                    print(f"💾 Cropped image saved as: {processed_filename}")
                 
                 # Display results on terminal
                 print("\n" + "="*40)
@@ -416,10 +589,16 @@ def main():
                 print("="*40)
                 print(f"Sugar Level: {sugar_level:.2f}")
                 print(f"Prediction #{prediction_count}")
+                if use_crop and crop_coords:
+                    print(f"Crop region: {crop_coords} (pixels)")
+                    crop_size = (crop_coords[2] - crop_coords[0], crop_coords[3] - crop_coords[1])
+                    print(f"Crop size: {crop_size[0]}x{crop_size[1]} pixels")
                 print("="*40)
                 
                 # Display image and prediction on ST7735 screen
-                display.show_image_and_prediction(frame, sugar_level)
+                display.show_image_and_prediction(
+                    frame, sugar_level, processed_img, crop_coords, args.show_original
+                )
                 
                 # Keep display on for a few seconds
                 if display.display_available:
