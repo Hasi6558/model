@@ -43,8 +43,11 @@ button_obj = None  # Global button object
 def button_callback():
     """Callback function for button press"""
     global button_pressed
-    button_pressed = True
-    print("🔘 Button pressed! Starting capture...")
+    if not button_pressed:  # Prevent multiple triggers
+        button_pressed = True
+        print("🔘 Button press detected! Preparing to capture...")
+        # Small delay to ensure clean button release
+        time.sleep(0.1)
 
 def setup_button():
     """Setup GPIO button if available"""
@@ -507,8 +510,11 @@ def main():
                 print(f"🎯 PREDICTION #{prediction_count}")
                 print(f"{'='*50}")
                 
-                # Reset button state for each iteration
+                # Ensure button state is completely reset for each iteration
                 button_pressed = False
+                
+                # Give a moment for any previous operations to complete
+                time.sleep(0.2)
                 
                 # Wait for trigger (button or auto mode)
                 if args.auto_mode:
@@ -541,7 +547,15 @@ def main():
                         while not button_pressed:
                             time.sleep(0.1)  # Small delay to prevent busy waiting
                         
-                        print("📸 Button pressed! Capturing image...")
+                        # Clear any buffered frames to get fresh image
+                        print("📸 Button pressed! Getting fresh frame...")
+                        
+                        # Read and discard a few frames to clear buffer
+                        for _ in range(3):
+                            cap.read()
+                        
+                        # Reset button state immediately after detection
+                        button_pressed = False
                     else:
                         # Fallback for systems without GPIO
                         print("⚠️ Button not available - falling back to keyboard input")
@@ -552,8 +566,17 @@ def main():
                         input("   Waiting for ENTER key...")
                         print("📸 Capturing image...")
                 
-                # Capture frame
-                ret, frame = cap.read()
+                # Capture frame - ensure we get a fresh frame
+                print("📸 Capturing fresh image...")
+                
+                # Clear camera buffer and get the most recent frame
+                for i in range(5):  # Read multiple frames to clear buffer
+                    ret, frame = cap.read()
+                    if not ret:
+                        print(f"❌ Error: Could not capture frame {i+1}")
+                        break
+                    time.sleep(0.02)  # Small delay between reads
+                
                 if not ret:
                     print("❌ Error: Could not capture image from camera")
                     if not continuous_mode:
@@ -561,6 +584,8 @@ def main():
                     print("⚠️ Retrying in 2 seconds...")
                     time.sleep(2)
                     continue
+                
+                print("✅ Fresh frame captured successfully!")
                 
                 # Save original image if requested
                 if args.save_image:
