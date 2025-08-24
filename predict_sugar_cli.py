@@ -299,6 +299,7 @@ def main():
     parser.add_argument('--model', type=str, default=model_path, help='Path to model file')
     parser.add_argument('--save-image', action='store_true', help='Save captured image')
     parser.add_argument('--auto-mode', action='store_true', help='Use automatic countdown instead of button')
+    parser.add_argument('--single-shot', action='store_true', help='Run once and exit (default is continuous loop)')
     args = parser.parse_args()
     
     # Global variable to track button press
@@ -327,73 +328,126 @@ def main():
         
         print("✅ Camera initialized successfully!")
         
-        # Wait for trigger (button or auto mode)
-        if args.auto_mode:
-            print("📸 Auto mode: Taking image in 3 seconds...")
-            print("3...")
-            time.sleep(1)
-            print("2...")
-            time.sleep(1)
-            print("1...")
-            time.sleep(1)
-            print("📸 Capturing image...")
+        # Determine if running in continuous loop or single shot
+        continuous_mode = not args.single_shot
+        if continuous_mode:
+            print("🔄 Running in continuous mode (Press Ctrl+C to exit)")
         else:
-            # Show waiting message on display
-            display.show_waiting_message()
-            
-            if button_available:
-                print("🔘 Waiting for button press on GPIO pin", BUTTON_PIN)
-                print("   (Press the physical button to capture image)")
+            print("📸 Running in single-shot mode")
+        
+        # Main prediction loop
+        prediction_count = 0
+        while True:
+            try:
+                prediction_count += 1
+                print(f"\n{'='*50}")
+                print(f"🎯 PREDICTION #{prediction_count}")
+                print(f"{'='*50}")
                 
-                # Wait for button press
-                while not button_pressed:
-                    time.sleep(0.1)  # Small delay to prevent busy waiting
+                # Reset button state for each iteration
+                button_pressed = False
                 
-                print("📸 Button pressed! Capturing image...")
-            else:
-                # Fallback for systems without GPIO
-                print("⚠️ Button not available - falling back to keyboard input")
-                print("📸 Press ENTER to capture image...")
-                input("   Waiting for ENTER key...")
-                print("📸 Capturing image...")
-        
-        # Capture frame
-        ret, frame = cap.read()
-        if not ret:
-            print("❌ Error: Could not capture image from camera")
-            return
-        
-        # Save image if requested
-        if args.save_image:
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            image_filename = f"captured_sample_{timestamp}.jpg"
-            cv2.imwrite(image_filename, frame)
-            print(f"💾 Image saved as: {image_filename}")
-        
-        # Predict sugar level
-        print("🔍 Analyzing image...")
-        sugar_level = predictor.predict_sugar_level(frame)
-        
-        # Display results on terminal
-        print("\n" + "="*40)
-        print("🍯 PREDICTION RESULT")
-        print("="*40)
-        print(f"Sugar Level: {sugar_level:.2f}")
-        print("="*40)
-        
-        # Display image and prediction on ST7735 screen
-        display.show_image_and_prediction(frame, sugar_level)
-        
-        # Keep display on for a few seconds
-        if display.display_available:
-            print("📺 Results displayed on screen for 10 seconds...")
-            time.sleep(10)
+                # Wait for trigger (button or auto mode)
+                if args.auto_mode:
+                    if continuous_mode:
+                        print("📸 Auto mode: Taking image in 5 seconds... (Press Ctrl+C to stop)")
+                        for i in range(5, 0, -1):
+                            print(f"{i}...")
+                            time.sleep(1)
+                    else:
+                        print("📸 Auto mode: Taking image in 3 seconds...")
+                        print("3...")
+                        time.sleep(1)
+                        print("2...")
+                        time.sleep(1)
+                        print("1...")
+                        time.sleep(1)
+                    print("📸 Capturing image...")
+                else:
+                    # Show waiting message on display
+                    display.show_waiting_message()
+                    
+                    if button_available:
+                        print(f"🔘 Waiting for button press on GPIO pin {BUTTON_PIN}")
+                        if continuous_mode:
+                            print("   (Press button for next prediction, Ctrl+C to exit)")
+                        else:
+                            print("   (Press the physical button to capture image)")
+                        
+                        # Wait for button press
+                        while not button_pressed:
+                            time.sleep(0.1)  # Small delay to prevent busy waiting
+                        
+                        print("📸 Button pressed! Capturing image...")
+                    else:
+                        # Fallback for systems without GPIO
+                        print("⚠️ Button not available - falling back to keyboard input")
+                        if continuous_mode:
+                            print("📸 Press ENTER for next prediction (Ctrl+C to exit)...")
+                        else:
+                            print("📸 Press ENTER to capture image...")
+                        input("   Waiting for ENTER key...")
+                        print("📸 Capturing image...")
+                
+                # Capture frame
+                ret, frame = cap.read()
+                if not ret:
+                    print("❌ Error: Could not capture image from camera")
+                    if not continuous_mode:
+                        break
+                    print("⚠️ Retrying in 2 seconds...")
+                    time.sleep(2)
+                    continue
+                
+                # Save image if requested
+                if args.save_image:
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    image_filename = f"captured_sample_{timestamp}.jpg"
+                    cv2.imwrite(image_filename, frame)
+                    print(f"💾 Image saved as: {image_filename}")
+                
+                # Predict sugar level
+                print("🔍 Analyzing image...")
+                sugar_level = predictor.predict_sugar_level(frame)
+                
+                # Display results on terminal
+                print("\n" + "="*40)
+                print("🍯 PREDICTION RESULT")
+                print("="*40)
+                print(f"Sugar Level: {sugar_level:.2f}")
+                print(f"Prediction #{prediction_count}")
+                print("="*40)
+                
+                # Display image and prediction on ST7735 screen
+                display.show_image_and_prediction(frame, sugar_level)
+                
+                # Keep display on for a few seconds
+                if display.display_available:
+                    display_time = 5 if continuous_mode else 10
+                    print(f"📺 Results displayed on screen for {display_time} seconds...")
+                    time.sleep(display_time)
+                
+                # Exit if single shot mode
+                if not continuous_mode:
+                    break
+                
+                # Brief pause between predictions in continuous mode
+                if continuous_mode:
+                    print("⏳ Ready for next prediction...")
+                    time.sleep(1)
+                    
+            except KeyboardInterrupt:
+                if continuous_mode:
+                    print(f"\n⚠️ Stopping continuous mode after {prediction_count} predictions")
+                    break
+                else:
+                    raise  # Re-raise for single shot mode
         
     except FileNotFoundError as e:
         print(f"❌ {e}")
         print("Make sure the model file exists and the path is correct.")
     except KeyboardInterrupt:
-        print("\n⚠️ Interrupted by user")
+        print(f"\n⚠️ Interrupted by user after {prediction_count} predictions")
     except Exception as e:
         print(f"❌ Unexpected error: {e}")
     finally:
@@ -401,7 +455,7 @@ def main():
         if 'cap' in locals():
             cap.release()
         cleanup_gpio()
-        print("✅ Done!")
+        print(f"✅ Done! Completed {prediction_count} predictions.")
 
 if __name__ == "__main__":
     main()
