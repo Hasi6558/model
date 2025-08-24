@@ -4,9 +4,11 @@ import numpy as np
 from tensorflow.keras.models import load_model
 import argparse
 import time
+import signal
+import sys
 from PIL import Image, ImageDraw, ImageFont
 
-# Try to import ST7735 display (only available on Raspberry Pi)
+# Try to import ST7735 display and GPIO (only available on Raspberry Pi)
 try:
     import st7735
     DISPLAY_AVAILABLE = True
@@ -14,11 +16,35 @@ except ImportError:
     DISPLAY_AVAILABLE = False
     print("⚠️ ST7735 display not available (running on non-Pi system)")
 
+try:
+    import RPi.GPIO as GPIO
+    GPIO_AVAILABLE = True
+except ImportError:
+    GPIO_AVAILABLE = False
+    print("⚠️ GPIO not available (running on non-Pi system)")
+
 # === CONFIGURATION ===
 # Use the current script directory as base directory (cross-platform)
 base_dir = os.path.dirname(os.path.abspath(__file__))
 model_path = os.path.join(base_dir, 'hsv_baseline_all_images.keras')
 image_size = (64, 64)  # Define image_size here
+
+# GPIO Configuration
+BUTTON_PIN = 18  # GPIO pin for push button (change as needed)
+button_pressed = False
+
+def signal_handler(sig, frame):
+    """Handle Ctrl+C gracefully"""
+    print('\n🛑 Shutting down gracefully...')
+    if GPIO_AVAILABLE:
+        GPIO.cleanup()
+    sys.exit(0)
+
+def button_callback(channel):
+    """Callback function for button press"""
+    global button_pressed
+    button_pressed = True
+    print("🔘 Button pressed! Starting capture process...")
 
 
 class SugarPredictor:
@@ -191,18 +217,88 @@ class DisplayManager:
             
         except Exception as e:
             print(f"⚠️ Error showing startup message: {e}")
+    
+    def show_waiting_message(self):
+        """Show waiting for button press message on display"""
+        if not self.display_available or self.disp is None:
+            return
+        
+        try:
+            img = Image.new('RGB', (self.width, self.height), color=(0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            
+            try:
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 12)
+            except:
+                font = ImageFont.load_default()
+            
+            # Center the text
+            text1 = "Sugar Predictor"
+            text1_bbox = draw.textbbox((0, 0), text1, font=font)
+            text1_width = text1_bbox[2] - text1_bbox[0]
+            text1_x = (self.width - text1_width) // 2
+            text1_y = self.height // 2 - 30
+            
+            # Yellow text - corrected for R/B swap
+            draw.text((text1_x, text1_y), text1, font=font, fill=(0, 255, 255))
+            
+            text2 = "Press Button"
+            text2_bbox = draw.textbbox((0, 0), text2, font=font)
+            text2_width = text2_bbox[2] - text2_bbox[0]
+            text2_x = (self.width - text2_width) // 2
+            text2_y = text1_y + 20
+            
+            draw.text((text2_x, text2_y), text2, font=font, fill=(255, 255, 255))
+            
+            text3 = "to Capture"
+            text3_bbox = draw.textbbox((0, 0), text3, font=font)
+            text3_width = text3_bbox[2] - text3_bbox[0]
+            text3_x = (self.width - text3_width) // 2
+            text3_y = text2_y + 20
+            
+            draw.text((text3_x, text3_y), text3, font=font, fill=(255, 255, 255))
+            
+            self.disp.display(img)
+            
+        except Exception as e:
+            print(f"⚠️ Error showing waiting message: {e}")
 
 def main():
-    parser = argparse.ArgumentParser(description='Sugar Level Prediction from Camera')
+    global button_pressed
+    
+    parser = argparse.ArgumentParser(description='Sugar Level Prediction from Camera with Button Trigger')
     parser.add_argument('--camera', type=int, default=0, help='Camera index (default: 0)')
     parser.add_argument('--model', type=str, default=model_path, help='Path to model file')
     parser.add_argument('--save-image', action='store_true', help='Save captured image')
+    parser.add_argument('--button-pin', type=int, default=BUTTON_PIN, help='GPIO pin for button (default: 18)')
+    parser.add_argument('--no-button', action='store_true', help='Run without button (capture every 5 seconds)')
     args = parser.parse_args()
+    
+    # Set up signal handler for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    # Initialize GPIO if available
+    if GPIO_AVAILABLE and not args.no_button:
+        try:
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(args.button_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+            GPIO.add_event_detect(args.button_pin, GPIO.FALLING, 
+                                callback=button_callback, bouncetime=300)
+            print(f"✅ GPIO button initialized on pin {args.button_pin}")
+            button_enabled = True
+        except Exception as e:
+            print(f"⚠️ GPIO setup failed: {e}")
+            button_enabled = False
+    else:
+        button_enabled = False
+        if args.no_button:
+            print("🔄 Running in automatic mode (no button required)")
     
     try:
         # Initialize display manager
         display = DisplayManager()
         display.show_startup_message()
+        time.sleep(2)  # Show startup message for 2 seconds
         
         # Initialize predictor
         predictor = SugarPredictor(args.model)
@@ -216,45 +312,96 @@ def main():
             return
         
         print("✅ Camera initialized successfully!")
-        print("📸 Taking image in 3 seconds...")
-        print("3...")
-        import time
-        time.sleep(1)
-        print("2...")
-        time.sleep(1)
-        print("1...")
-        time.sleep(1)
-        print("📸 Capturing image...")
         
-        # Capture frame
-        ret, frame = cap.read()
-        if not ret:
-            print("❌ Error: Could not capture image from camera")
-            return
+        if button_enabled:
+            print("� System ready! Press the button to capture and analyze...")
+            display.show_waiting_message()
+        else:
+            print("🔄 System ready! Running in automatic mode...")
         
-        # Save image if requested
-        if args.save_image:
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            image_filename = f"captured_sample_{timestamp}.jpg"
-            cv2.imwrite(image_filename, frame)
-            print(f"💾 Image saved as: {image_filename}")
+        capture_count = 0
         
-        # Predict sugar level
-        print("� Analyzing image...")
-        sugar_level = predictor.predict_sugar_level(frame)
-        
-        print("\n" + "="*40)
-        print("🍯 PREDICTION RESULT")
-        print("="*40)
-        print(f"Sugar Level: {sugar_level:.2f}")
-        print("="*40)
-        # Display image and prediction on ST7735 screen
-        display.show_image_and_prediction(frame, sugar_level)
-        
-        # Keep display on for a few seconds
-        if display.display_available:
-            print("📺 Results displayed on screen for 10 seconds...")
-            time.sleep(10)
+        # Main continuous loop
+        while True:
+            try:
+                # Check for button press or automatic trigger
+                should_capture = False
+                
+                if button_enabled and button_pressed:
+                    should_capture = True
+                    button_pressed = False  # Reset flag
+                elif not button_enabled:
+                    should_capture = True
+                    print(f"⏰ Auto-capture #{capture_count + 1} starting...")
+                
+                if should_capture:
+                    capture_count += 1
+                    print(f"\n📸 === CAPTURE #{capture_count} ===")
+                    
+                    # Countdown
+                    print("📸 Taking image in 3 seconds...")
+                    for i in [3, 2, 1]:
+                        print(f"{i}...")
+                        time.sleep(1)
+                    
+                    print("📸 Capturing image...")
+                    
+                    # Capture frame
+                    ret, frame = cap.read()
+                    if not ret:
+                        print("❌ Error: Could not capture image from camera")
+                        continue
+                    
+                    # Save image if requested
+                    if args.save_image:
+                        timestamp = time.strftime("%Y%m%d_%H%M%S")
+                        image_filename = f"captured_sample_{timestamp}.jpg"
+                        cv2.imwrite(image_filename, frame)
+                        print(f"💾 Image saved as: {image_filename}")
+                    
+                    # Predict sugar level
+                    print("🔍 Analyzing image...")
+                    sugar_level = predictor.predict_sugar_level(frame)
+                    
+                    # Display results on terminal
+                    print("\n" + "="*40)
+                    print("🍯 PREDICTION RESULT")
+                    print("="*40)
+                    print(f"Sugar Level: {sugar_level:.2f}")
+                    print(f"Capture Count: {capture_count}")
+                    print("="*40)
+                    
+                    # Display image and prediction on ST7735 screen
+                    display.show_image_and_prediction(frame, sugar_level)
+                    
+                    # Keep display on for a few seconds
+                    if display.display_available:
+                        print("📺 Results displayed on screen for 5 seconds...")
+                        time.sleep(5)
+                        
+                        # Show waiting message again if button is enabled
+                        if button_enabled:
+                            display.show_waiting_message()
+                            print("🔘 Ready for next capture - press button...")
+                        else:
+                            print("⏰ Waiting 10 seconds before next capture...")
+                            time.sleep(10)
+                    else:
+                        if button_enabled:
+                            print("🔘 Ready for next capture - press button...")
+                        else:
+                            print("⏰ Waiting 15 seconds before next capture...")
+                            time.sleep(15)
+                
+                # Small delay to prevent excessive CPU usage
+                time.sleep(0.1)
+                
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                print(f"❌ Error during capture cycle: {e}")
+                print("⏳ Waiting 5 seconds before retry...")
+                time.sleep(5)
         
     except FileNotFoundError as e:
         print(f"❌ {e}")
@@ -263,9 +410,12 @@ def main():
         print(f"❌ Unexpected error: {e}")
     finally:
         # Clean up
+        print("\n🛑 Shutting down...")
         if 'cap' in locals():
             cap.release()
-        print("✅ Done!")
+        if GPIO_AVAILABLE:
+            GPIO.cleanup()
+        print("✅ Cleanup completed!")
 
 if __name__ == "__main__":
     main()
