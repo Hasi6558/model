@@ -28,7 +28,7 @@ model_path = os.path.join(base_dir, 'hsv_baseline_all_images.keras')
 image_size = (64, 64)  # Define image_size here
 
 # GPIO Configuration
-BUTTON_PIN = 18  # GPIO pin for the push button (change as needed)
+BUTTON_PIN = 17  # GPIO pin for the push button (change as needed)
 button_pressed = False
 
 def button_callback(channel):
