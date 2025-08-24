@@ -89,8 +89,9 @@ class DisplayManager:
             return
         
         try:
-            # Convert CV2 image (BGR) to PIL image (RGB)
-            pil_image = Image.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
+            # Convert CV2 image (BGR) to PIL image (RGB) - Fix color channel order
+            rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(rgb_image)
             
             # Create display image
             display_img = Image.new('RGB', (self.width, self.height), color=(0, 0, 0))
@@ -103,8 +104,15 @@ class DisplayManager:
             # Resize captured image to fit display area
             img_resized = pil_image.resize((img_display_width, img_display_height))
             
-            # Paste image at top of display
-            display_img.paste(img_resized, (0, 0))
+            # Fix color mapping for ST7735 - swap R and B channels if needed
+            # Convert to numpy array for color channel manipulation
+            img_array = np.array(img_resized)
+            # Swap red and blue channels to fix color display issue
+            img_array[:, :, [0, 2]] = img_array[:, :, [2, 0]]  # Swap R and B
+            img_resized_corrected = Image.fromarray(img_array)
+            
+            # Paste corrected image at top of display
+            display_img.paste(img_resized_corrected, (0, 0))
             
             # Load default font
             try:
@@ -120,15 +128,16 @@ class DisplayManager:
             # Background for text
             draw.rectangle([0, img_display_height, self.width, self.height], fill=(0, 0, 0))
             
-            # Sugar level text
+            # Sugar level text - use proper green color (corrected for R/B swap)
             sugar_text = f"Sugar: {sugar_level:.2f}"
             text_bbox = draw.textbbox((0, 0), sugar_text, font=font)
             text_width = text_bbox[2] - text_bbox[0]
             text_x = (self.width - text_width) // 2
             
+            # Green color corrected for R/B swap: (0, 255, 0) becomes (0, 255, 0) - stays same
             draw.text((text_x, text_y), sugar_text, font=font, fill=(0, 255, 0))
             
-            # Status text
+            # Status text - white should remain white
             status_text = "Analysis Complete"
             status_bbox = draw.textbbox((0, 0), status_text, font=font)
             status_width = status_bbox[2] - status_bbox[0]
@@ -166,7 +175,8 @@ class DisplayManager:
             text_x = (self.width - text_width) // 2
             text_y = self.height // 2 - 20
             
-            draw.text((text_x, text_y), text, font=font, fill=(255, 255, 0))
+            # Yellow text - corrected for R/B swap: (255, 255, 0) becomes (0, 255, 255) for proper yellow
+            draw.text((text_x, text_y), text, font=font, fill=(0, 255, 255))
             
             status_text = "Starting..."
             status_bbox = draw.textbbox((0, 0), status_text, font=font)
@@ -174,6 +184,7 @@ class DisplayManager:
             status_x = (self.width - status_width) // 2
             status_y = text_y + 25
             
+            # White text remains white
             draw.text((status_x, status_y), status_text, font=font, fill=(255, 255, 255))
             
             self.disp.display(img)
