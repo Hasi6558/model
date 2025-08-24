@@ -37,7 +37,7 @@ image_size = (64, 64)  # Define image_size here
 # x_end = 0.5 + (269/640)/2 = 0.5 + 0.2102 = 0.7102
 # y_start = 0.5 - (241/480)/2 = 0.5 - 0.2510 = 0.2490
 # y_end = 0.5 + (241/480)/2 = 0.5 + 0.2510 = 0.7510
-CROP_REGION = (0.2898, 0.2490, 0.7102, 0.7510)  # Center 269x241 pixels for 640x480
+CROP_REGION = (0.3945, 0.3326, 0.6055, 0.6674)  # Center 269x241 pixels for 640x480
 
 # Alternative crop regions for different camera resolutions:
 # For 1280x720 (HD): (0.3945, 0.3326, 0.6055, 0.6674)  # Center 269x241
@@ -211,8 +211,9 @@ class SugarPredictor:
         
         Returns:
             prediction: Sugar level prediction
-            processed_img: The actual image used for prediction (for display)
+            processed_img: The cropped image (original size)
             crop_coords: Crop coordinates if cropping was used
+            scaled_img: The actual 64x64 image used for prediction
         """
         processed_img = img.copy()
         crop_coords = None
@@ -222,11 +223,14 @@ class SugarPredictor:
             processed_img, crop_coords = crop_image(img, crop_region)
             print(f"📐 Using cropped region: {crop_region} -> {crop_coords}")
         
-        # Preprocess and predict
+        # Create the scaled version that goes into the model
+        img_resized = cv2.resize(processed_img, image_size)  # This is the actual input to model
+        
+        # Preprocess for prediction (but keep the resized BGR version for display)
         img_preprocessed = self.preprocess_image(processed_img)
         prediction = self.model.predict(img_preprocessed, verbose=0)
         
-        return prediction[0][0], processed_img, crop_coords
+        return prediction[0][0], processed_img, crop_coords, img_resized
 
 
 class DisplayManager:
@@ -257,7 +261,7 @@ class DisplayManager:
                 print(f"⚠️ Failed to initialize display: {e}")
                 self.display_available = False
     
-    def show_image_and_prediction(self, cv_image, sugar_level, processed_img=None, crop_coords=None, show_original=False):
+    def show_image_and_prediction(self, cv_image, sugar_level, processed_img=None, crop_coords=None, scaled_img=None, show_original=False, show_scaled=False):
         """
         Display captured image and prediction on ST7735 screen
         
@@ -266,7 +270,9 @@ class DisplayManager:
             sugar_level: Predicted sugar level
             processed_img: Processed/cropped image used for prediction
             crop_coords: Crop coordinates if cropping was used
-            show_original: If True, show original with crop overlay; if False, show processed image
+            scaled_img: The actual 64x64 scaled image fed to the model
+            show_original: If True, show original with crop overlay
+            show_scaled: If True, show the actual scaled image used by model
         """
         if not self.display_available or self.disp is None:
             print(f"📺 Display not available - Sugar Level: {sugar_level:.2f}")
@@ -274,7 +280,12 @@ class DisplayManager:
         
         try:
             # Choose which image to display
-            if show_original and crop_coords is not None:
+            if show_scaled and scaled_img is not None:
+                # Show the actual 64x64 image that goes into the model
+                display_source = scaled_img
+                image_info = "64x64 Model Input"
+                print("📺 Displaying actual scaled image used by model")
+            elif show_original and crop_coords is not None:
                 # Show original image with crop overlay
                 display_source = draw_crop_overlay(cv_image, crop_coords)
                 image_info = "Original + Crop Overlay"
@@ -299,8 +310,13 @@ class DisplayManager:
             img_display_height = int(self.height * 0.6)
             img_display_width = self.width
             
-            # Resize captured image to fit display area
-            img_resized = pil_image.resize((img_display_width, img_display_height))
+            # For scaled image, use nearest neighbor to preserve pixelation and show exact model input
+            if show_scaled:
+                # Use nearest neighbor interpolation to show exact pixels
+                img_resized = pil_image.resize((img_display_width, img_display_height), Image.NEAREST)
+            else:
+                # Use normal interpolation for other images
+                img_resized = pil_image.resize((img_display_width, img_display_height))
             
             # Fix color mapping for ST7735 - swap R and B channels if needed
             # Convert to numpy array for color channel manipulation
@@ -343,7 +359,14 @@ class DisplayManager:
             type_x = (self.width - type_width) // 2
             type_y = text_y + 20
             
-            draw.text((type_x, type_y), type_text, font=small_font, fill=(255, 255, 255))
+            # Use different colors for different image types
+            if show_scaled:
+                type_color = (255, 165, 0)  # Orange for scaled (corrected: swap R and B)
+                type_color = (type_color[2], type_color[1], type_color[0])  # Apply R/B swap
+            else:
+                type_color = (255, 255, 255)  # White for others
+            
+            draw.text((type_x, type_y), type_text, font=small_font, fill=type_color)
             
             # Status text
             status_text = "Analysis Complete"
@@ -460,6 +483,7 @@ def main():
     parser.add_argument('--single-shot', action='store_true', help='Run once and exit (default is continuous loop)')
     parser.add_argument('--no-crop', action='store_true', help='Disable image cropping')
     parser.add_argument('--show-original', action='store_true', help='Show original image with crop overlay on display')
+    parser.add_argument('--show-scaled', action='store_true', help='Show actual 64x64 scaled image used by model')
     parser.add_argument('--crop-region', type=str, help='Crop region as "x1,y1,x2,y2" (percentages 0.0-1.0)')
     args = parser.parse_args()
     
@@ -505,9 +529,16 @@ def main():
         # Display crop settings
         if not args.no_crop:
             print(f"📐 Crop region: {crop_region} (x1%, y1%, x2%, y2%)")
-            print(f"📺 Display mode: {'Original + Overlay' if args.show_original else 'Cropped Image'}")
+            if args.show_scaled:
+                print(f"📺 Display mode: 64x64 Scaled Model Input")
+            elif args.show_original:
+                print(f"📺 Display mode: Original + Overlay")
+            else:
+                print(f"📺 Display mode: Cropped Image")
         else:
             print("📐 Cropping disabled - using full image")
+            if args.show_scaled:
+                print(f"📺 Display mode: 64x64 Scaled Model Input")
         
         # Determine if running in continuous loop or single shot
         continuous_mode = not args.single_shot
@@ -612,7 +643,7 @@ def main():
                 # Predict sugar level with or without cropping
                 print("🔍 Analyzing image...")
                 use_crop = not args.no_crop
-                sugar_level, processed_img, crop_coords = predictor.predict_sugar_level(
+                sugar_level, processed_img, crop_coords, scaled_img = predictor.predict_sugar_level(
                     frame, use_crop=use_crop, crop_region=crop_region
                 )
                 
@@ -622,6 +653,13 @@ def main():
                     processed_filename = f"cropped_{timestamp}.jpg"
                     cv2.imwrite(processed_filename, processed_img)
                     print(f"💾 Cropped image saved as: {processed_filename}")
+                
+                # Save scaled image if requested and showing scaled
+                if args.save_image and args.show_scaled and scaled_img is not None:
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    scaled_filename = f"scaled_64x64_{timestamp}.jpg"
+                    cv2.imwrite(scaled_filename, scaled_img)
+                    print(f"💾 Scaled 64x64 image saved as: {scaled_filename}")
                 
                 # Display results on terminal
                 print("\n" + "="*40)
@@ -633,11 +671,14 @@ def main():
                     print(f"Crop region: {crop_coords} (pixels)")
                     crop_size = (crop_coords[2] - crop_coords[0], crop_coords[3] - crop_coords[1])
                     print(f"Crop size: {crop_size[0]}x{crop_size[1]} pixels")
+                if args.show_scaled:
+                    print(f"Model input size: 64x64 pixels")
                 print("="*40)
                 
                 # Display image and prediction on ST7735 screen
                 display.show_image_and_prediction(
-                    frame, sugar_level, processed_img, crop_coords, args.show_original
+                    frame, sugar_level, processed_img, crop_coords, scaled_img, 
+                    args.show_original, args.show_scaled
                 )
                 
                 # Keep display on for a few seconds
