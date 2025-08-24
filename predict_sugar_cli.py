@@ -19,9 +19,17 @@ except ImportError:
 try:
     import RPi.GPIO as GPIO
     GPIO_AVAILABLE = True
+    GPIO_LIBRARY = "RPi.GPIO"
 except ImportError:
-    GPIO_AVAILABLE = False
-    print("⚠️ GPIO not available (running on non-Pi system)")
+    try:
+        import gpiozero
+        GPIO_AVAILABLE = True
+        GPIO_LIBRARY = "gpiozero"
+        print("ℹ️ Using gpiozero library for GPIO control")
+    except ImportError:
+        GPIO_AVAILABLE = False
+        GPIO_LIBRARY = None
+        print("⚠️ No GPIO library available (running on non-Pi system)")
 
 # === CONFIGURATION ===
 # Use the current script directory as base directory (cross-platform)
@@ -36,12 +44,12 @@ button_pressed = False
 def signal_handler(sig, frame):
     """Handle Ctrl+C gracefully"""
     print('\n🛑 Shutting down gracefully...')
-    if GPIO_AVAILABLE:
+    if GPIO_AVAILABLE and GPIO_LIBRARY == "RPi.GPIO":
         GPIO.cleanup()
     sys.exit(0)
 
-def button_callback(channel):
-    """Callback function for button press"""
+def button_callback(channel=None):
+    """Callback function for button press - works with both GPIO libraries"""
     global button_pressed
     button_pressed = True
     print("🔘 Button pressed! Starting capture process...")
@@ -279,16 +287,44 @@ def main():
     # Initialize GPIO if available
     if GPIO_AVAILABLE:
         try:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setup(args.button_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-            GPIO.add_event_detect(args.button_pin, GPIO.FALLING, 
-                                callback=button_callback, bouncetime=300)
-            print(f"✅ GPIO button initialized on pin {args.button_pin}")
-            button_enabled = True
+            if GPIO_LIBRARY == "RPi.GPIO":
+                # Try RPi.GPIO first
+                GPIO.setmode(GPIO.BCM)
+                GPIO.setup(args.button_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+                GPIO.add_event_detect(args.button_pin, GPIO.FALLING, 
+                                    callback=button_callback, bouncetime=300)
+                print(f"✅ GPIO button initialized using RPi.GPIO on pin {args.button_pin}")
+                button_enabled = True
+            elif GPIO_LIBRARY == "gpiozero":
+                # Use gpiozero as fallback (better Pi 5 support)
+                from gpiozero import Button
+                global gpio_button
+                gpio_button = Button(args.button_pin, pull_up=True)
+                gpio_button.when_pressed = button_callback
+                print(f"✅ GPIO button initialized using gpiozero on pin {args.button_pin}")
+                button_enabled = True
+            else:
+                print("⚠️ No suitable GPIO library found")
+                button_enabled = False
         except Exception as e:
             print(f"⚠️ GPIO setup failed: {e}")
-            print("❌ Button functionality disabled - system will not capture")
-            button_enabled = False
+            if GPIO_LIBRARY == "RPi.GPIO":
+                print("🔄 Trying gpiozero library as fallback...")
+                try:
+                    import gpiozero
+                    from gpiozero import Button
+                    global gpio_button
+                    gpio_button = Button(args.button_pin, pull_up=True)
+                    gpio_button.when_pressed = button_callback
+                    print(f"✅ GPIO button initialized using gpiozero fallback on pin {args.button_pin}")
+                    button_enabled = True
+                except Exception as fallback_error:
+                    print(f"❌ Fallback also failed: {fallback_error}")
+                    print("❌ Button functionality disabled - system will not capture")
+                    button_enabled = False
+            else:
+                print("❌ Button functionality disabled - system will not capture")
+                button_enabled = False
     else:
         print("⚠️ GPIO not available - button functionality disabled")
         print("❌ System will not capture without button support")
@@ -401,7 +437,7 @@ def main():
         print("\n🛑 Shutting down...")
         if 'cap' in locals():
             cap.release()
-        if GPIO_AVAILABLE:
+        if GPIO_AVAILABLE and GPIO_LIBRARY == "RPi.GPIO":
             GPIO.cleanup()
         print("✅ Cleanup completed!")
 
