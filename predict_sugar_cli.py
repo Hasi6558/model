@@ -271,14 +271,13 @@ def main():
     parser.add_argument('--model', type=str, default=model_path, help='Path to model file')
     parser.add_argument('--save-image', action='store_true', help='Save captured image')
     parser.add_argument('--button-pin', type=int, default=BUTTON_PIN, help='GPIO pin for button (default: 18)')
-    parser.add_argument('--no-button', action='store_true', help='Run without button (capture every 5 seconds)')
     args = parser.parse_args()
     
     # Set up signal handler for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
     
     # Initialize GPIO if available
-    if GPIO_AVAILABLE and not args.no_button:
+    if GPIO_AVAILABLE:
         try:
             GPIO.setmode(GPIO.BCM)
             GPIO.setup(args.button_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
@@ -288,11 +287,12 @@ def main():
             button_enabled = True
         except Exception as e:
             print(f"⚠️ GPIO setup failed: {e}")
+            print("❌ Button functionality disabled - system will not capture")
             button_enabled = False
     else:
+        print("⚠️ GPIO not available - button functionality disabled")
+        print("❌ System will not capture without button support")
         button_enabled = False
-        if args.no_button:
-            print("🔄 Running in automatic mode (no button required)")
     
     try:
         # Initialize display manager
@@ -317,24 +317,17 @@ def main():
             print("� System ready! Press the button to capture and analyze...")
             display.show_waiting_message()
         else:
-            print("🔄 System ready! Running in automatic mode...")
+            print("❌ System cannot operate without button functionality")
+            return
         
         capture_count = 0
         
-        # Main continuous loop
+        # Main continuous loop - only captures on button press
         while True:
             try:
-                # Check for button press or automatic trigger
-                should_capture = False
-                
-                if button_enabled and button_pressed:
-                    should_capture = True
+                # Only capture when button is pressed
+                if button_pressed:
                     button_pressed = False  # Reset flag
-                elif not button_enabled:
-                    should_capture = True
-                    print(f"⏰ Auto-capture #{capture_count + 1} starting...")
-                
-                if should_capture:
                     capture_count += 1
                     print(f"\n📸 === CAPTURE #{capture_count} ===")
                     
@@ -350,6 +343,8 @@ def main():
                     ret, frame = cap.read()
                     if not ret:
                         print("❌ Error: Could not capture image from camera")
+                        print("🔘 Ready for next capture - press button...")
+                        display.show_waiting_message()
                         continue
                     
                     # Save image if requested
@@ -379,29 +374,22 @@ def main():
                         print("📺 Results displayed on screen for 5 seconds...")
                         time.sleep(5)
                         
-                        # Show waiting message again if button is enabled
-                        if button_enabled:
-                            display.show_waiting_message()
-                            print("🔘 Ready for next capture - press button...")
-                        else:
-                            print("⏰ Waiting 10 seconds before next capture...")
-                            time.sleep(10)
+                        # Show waiting message again
+                        display.show_waiting_message()
+                        print("🔘 Ready for next capture - press button...")
                     else:
-                        if button_enabled:
-                            print("🔘 Ready for next capture - press button...")
-                        else:
-                            print("⏰ Waiting 15 seconds before next capture...")
-                            time.sleep(15)
+                        print("🔘 Ready for next capture - press button...")
                 
-                # Small delay to prevent excessive CPU usage
+                # Small delay to prevent excessive CPU usage while waiting
                 time.sleep(0.1)
                 
             except KeyboardInterrupt:
                 break
             except Exception as e:
                 print(f"❌ Error during capture cycle: {e}")
-                print("⏳ Waiting 5 seconds before retry...")
-                time.sleep(5)
+                print("🔘 Ready for next capture - press button...")
+                display.show_waiting_message()
+                time.sleep(2)
         
     except FileNotFoundError as e:
         print(f"❌ {e}")
