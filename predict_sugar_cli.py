@@ -4,32 +4,22 @@ import numpy as np
 from tensorflow.keras.models import load_model
 import argparse
 import time
-import signal
-import sys
 from PIL import Image, ImageDraw, ImageFont
 
-# Try to import ST7735 display and GPIO (only available on Raspberry Pi)
+# Try to import GPIO and ST7735 display (only available on Raspberry Pi)
+try:
+    import RPi.GPIO as GPIO
+    GPIO_AVAILABLE = True
+except ImportError:
+    GPIO_AVAILABLE = False
+    print("⚠️ RPi.GPIO not available (running on non-Pi system)")
+
 try:
     import st7735
     DISPLAY_AVAILABLE = True
 except ImportError:
     DISPLAY_AVAILABLE = False
     print("⚠️ ST7735 display not available (running on non-Pi system)")
-
-try:
-    import RPi.GPIO as GPIO
-    GPIO_AVAILABLE = True
-    GPIO_LIBRARY = "RPi.GPIO"
-except ImportError:
-    try:
-        import gpiozero
-        GPIO_AVAILABLE = True
-        GPIO_LIBRARY = "gpiozero"
-        print("ℹ️ Using gpiozero library for GPIO control")
-    except ImportError:
-        GPIO_AVAILABLE = False
-        GPIO_LIBRARY = None
-        print("⚠️ No GPIO library available (running on non-Pi system)")
 
 # === CONFIGURATION ===
 # Use the current script directory as base directory (cross-platform)
@@ -38,21 +28,38 @@ model_path = os.path.join(base_dir, 'hsv_baseline_all_images.keras')
 image_size = (64, 64)  # Define image_size here
 
 # GPIO Configuration
-BUTTON_PIN = 18  # GPIO pin for push button (change as needed)
+BUTTON_PIN = 18  # GPIO pin for the push button (change as needed)
 button_pressed = False
 
-def signal_handler(sig, frame):
-    """Handle Ctrl+C gracefully"""
-    print('\n🛑 Shutting down gracefully...')
-    if GPIO_AVAILABLE and GPIO_LIBRARY == "RPi.GPIO":
-        GPIO.cleanup()
-    sys.exit(0)
-
-def button_callback(channel=None):
-    """Callback function for button press - works with both GPIO libraries"""
+def button_callback(channel):
+    """Callback function for button press"""
     global button_pressed
     button_pressed = True
-    print("🔘 Button pressed! Starting capture process...")
+    print("🔘 Button pressed! Starting capture...")
+
+def setup_button():
+    """Setup GPIO button if available"""
+    if not GPIO_AVAILABLE:
+        print("⚠️ GPIO not available - button functionality disabled")
+        return False
+    
+    try:
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        GPIO.add_event_detect(BUTTON_PIN, GPIO.FALLING, callback=button_callback, bouncetime=300)
+        print(f"✅ Button setup on GPIO pin {BUTTON_PIN}")
+        return True
+    except Exception as e:
+        print(f"⚠️ Failed to setup button: {e}")
+        return False
+
+def cleanup_gpio():
+    """Clean up GPIO resources"""
+    if GPIO_AVAILABLE:
+        try:
+            GPIO.cleanup()
+        except:
+            pass
 
 
 class SugarPredictor:
@@ -236,35 +243,41 @@ class DisplayManager:
             draw = ImageDraw.Draw(img)
             
             try:
-                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 12)
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+                small_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
             except:
                 font = ImageFont.load_default()
+                small_font = ImageFont.load_default()
             
-            # Center the text
-            text1 = "Sugar Predictor"
-            text1_bbox = draw.textbbox((0, 0), text1, font=font)
-            text1_width = text1_bbox[2] - text1_bbox[0]
-            text1_x = (self.width - text1_width) // 2
-            text1_y = self.height // 2 - 30
+            # Center the title text
+            title_text = "Sugar Predictor"
+            text_bbox = draw.textbbox((0, 0), title_text, font=font)
+            text_width = text_bbox[2] - text_bbox[0]
+            text_x = (self.width - text_width) // 2
+            text_y = self.height // 2 - 30
             
-            # Yellow text - corrected for R/B swap
-            draw.text((text1_x, text1_y), text1, font=font, fill=(0, 255, 255))
+            # Yellow title - corrected for R/B swap
+            draw.text((text_x, text_y), title_text, font=font, fill=(0, 255, 255))
             
-            text2 = "Press Button"
-            text2_bbox = draw.textbbox((0, 0), text2, font=font)
-            text2_width = text2_bbox[2] - text2_bbox[0]
-            text2_x = (self.width - text2_width) // 2
-            text2_y = text1_y + 20
+            # Ready status
+            ready_text = "Ready!"
+            ready_bbox = draw.textbbox((0, 0), ready_text, font=font)
+            ready_width = ready_bbox[2] - ready_bbox[0]
+            ready_x = (self.width - ready_width) // 2
+            ready_y = text_y + 25
             
-            draw.text((text2_x, text2_y), text2, font=font, fill=(255, 255, 255))
+            # Green ready text
+            draw.text((ready_x, ready_y), ready_text, font=font, fill=(0, 255, 0))
             
-            text3 = "to Capture"
-            text3_bbox = draw.textbbox((0, 0), text3, font=font)
-            text3_width = text3_bbox[2] - text3_bbox[0]
-            text3_x = (self.width - text3_width) // 2
-            text3_y = text2_y + 20
+            # Instruction text
+            instruction_text = "Press button to capture"
+            instruction_bbox = draw.textbbox((0, 0), instruction_text, font=small_font)
+            instruction_width = instruction_bbox[2] - instruction_bbox[0]
+            instruction_x = (self.width - instruction_width) // 2
+            instruction_y = ready_y + 30
             
-            draw.text((text3_x, text3_y), text3, font=font, fill=(255, 255, 255))
+            # White instruction text
+            draw.text((instruction_x, instruction_y), instruction_text, font=small_font, fill=(255, 255, 255))
             
             self.disp.display(img)
             
@@ -272,69 +285,25 @@ class DisplayManager:
             print(f"⚠️ Error showing waiting message: {e}")
 
 def main():
-    global button_pressed
-    
-    parser = argparse.ArgumentParser(description='Sugar Level Prediction from Camera with Button Trigger')
+    parser = argparse.ArgumentParser(description='Sugar Level Prediction from Camera')
     parser.add_argument('--camera', type=int, default=0, help='Camera index (default: 0)')
     parser.add_argument('--model', type=str, default=model_path, help='Path to model file')
     parser.add_argument('--save-image', action='store_true', help='Save captured image')
-    parser.add_argument('--button-pin', type=int, default=BUTTON_PIN, help='GPIO pin for button (default: 18)')
+    parser.add_argument('--auto-mode', action='store_true', help='Use automatic countdown instead of button')
     args = parser.parse_args()
     
-    # Set up signal handler for graceful shutdown
-    signal.signal(signal.SIGINT, signal_handler)
-    
-    # Initialize GPIO if available
-    if GPIO_AVAILABLE:
-        try:
-            if GPIO_LIBRARY == "RPi.GPIO":
-                # Try RPi.GPIO first
-                GPIO.setmode(GPIO.BCM)
-                GPIO.setup(args.button_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-                GPIO.add_event_detect(args.button_pin, GPIO.FALLING, 
-                                    callback=button_callback, bouncetime=300)
-                print(f"✅ GPIO button initialized using RPi.GPIO on pin {args.button_pin}")
-                button_enabled = True
-            elif GPIO_LIBRARY == "gpiozero":
-                # Use gpiozero as fallback (better Pi 5 support)
-                from gpiozero import Button
-                global gpio_button
-                gpio_button = Button(args.button_pin, pull_up=True)
-                gpio_button.when_pressed = button_callback
-                print(f"✅ GPIO button initialized using gpiozero on pin {args.button_pin}")
-                button_enabled = True
-            else:
-                print("⚠️ No suitable GPIO library found")
-                button_enabled = False
-        except Exception as e:
-            print(f"⚠️ GPIO setup failed: {e}")
-            if GPIO_LIBRARY == "RPi.GPIO":
-                print("🔄 Trying gpiozero library as fallback...")
-                try:
-                    import gpiozero
-                    from gpiozero import Button
-                    global gpio_button
-                    gpio_button = Button(args.button_pin, pull_up=True)
-                    gpio_button.when_pressed = button_callback
-                    print(f"✅ GPIO button initialized using gpiozero fallback on pin {args.button_pin}")
-                    button_enabled = True
-                except Exception as fallback_error:
-                    print(f"❌ Fallback also failed: {fallback_error}")
-                    print("❌ Button functionality disabled - system will not capture")
-                    button_enabled = False
-            else:
-                print("❌ Button functionality disabled - system will not capture")
-                button_enabled = False
-    else:
-        print("⚠️ GPIO not available - button functionality disabled")
-        print("❌ System will not capture without button support")
-        button_enabled = False
+    # Global variable to track button press
+    global button_pressed
     
     try:
         # Initialize display manager
         display = DisplayManager()
         display.show_startup_message()
-        time.sleep(2)  # Show startup message for 2 seconds
+        
+        # Setup button if not in auto mode
+        button_available = False
+        if not args.auto_mode:
+            button_available = setup_button()
         
         # Initialize predictor
         predictor = SugarPredictor(args.model)
@@ -349,97 +318,81 @@ def main():
         
         print("✅ Camera initialized successfully!")
         
-        if button_enabled:
-            print("� System ready! Press the button to capture and analyze...")
-            display.show_waiting_message()
+        # Wait for trigger (button or auto mode)
+        if args.auto_mode:
+            print("📸 Auto mode: Taking image in 3 seconds...")
+            print("3...")
+            time.sleep(1)
+            print("2...")
+            time.sleep(1)
+            print("1...")
+            time.sleep(1)
+            print("📸 Capturing image...")
         else:
-            print("❌ System cannot operate without button functionality")
+            # Show waiting message on display
+            display.show_waiting_message()
+            
+            if button_available:
+                print("🔘 Waiting for button press on GPIO pin", BUTTON_PIN)
+                print("   (Press the physical button to capture image)")
+                
+                # Wait for button press
+                while not button_pressed:
+                    time.sleep(0.1)  # Small delay to prevent busy waiting
+                
+                print("📸 Button pressed! Capturing image...")
+            else:
+                # Fallback for systems without GPIO
+                print("⚠️ Button not available - falling back to keyboard input")
+                print("📸 Press ENTER to capture image...")
+                input("   Waiting for ENTER key...")
+                print("📸 Capturing image...")
+        
+        # Capture frame
+        ret, frame = cap.read()
+        if not ret:
+            print("❌ Error: Could not capture image from camera")
             return
         
-        capture_count = 0
+        # Save image if requested
+        if args.save_image:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            image_filename = f"captured_sample_{timestamp}.jpg"
+            cv2.imwrite(image_filename, frame)
+            print(f"💾 Image saved as: {image_filename}")
         
-        # Main continuous loop - only captures on button press
-        while True:
-            try:
-                # Only capture when button is pressed
-                if button_pressed:
-                    button_pressed = False  # Reset flag
-                    capture_count += 1
-                    print(f"\n📸 === CAPTURE #{capture_count} ===")
-                    
-                    # Countdown
-                    print("📸 Taking image in 3 seconds...")
-                    for i in [3, 2, 1]:
-                        print(f"{i}...")
-                        time.sleep(1)
-                    
-                    print("📸 Capturing image...")
-                    
-                    # Capture frame
-                    ret, frame = cap.read()
-                    if not ret:
-                        print("❌ Error: Could not capture image from camera")
-                        print("🔘 Ready for next capture - press button...")
-                        display.show_waiting_message()
-                        continue
-                    
-                    # Save image if requested
-                    if args.save_image:
-                        timestamp = time.strftime("%Y%m%d_%H%M%S")
-                        image_filename = f"captured_sample_{timestamp}.jpg"
-                        cv2.imwrite(image_filename, frame)
-                        print(f"💾 Image saved as: {image_filename}")
-                    
-                    # Predict sugar level
-                    print("🔍 Analyzing image...")
-                    sugar_level = predictor.predict_sugar_level(frame)
-                    
-                    # Display results on terminal
-                    print("\n" + "="*40)
-                    print("🍯 PREDICTION RESULT")
-                    print("="*40)
-                    print(f"Sugar Level: {sugar_level:.2f}")
-                    print(f"Capture Count: {capture_count}")
-                    print("="*40)
-                    
-                    # Display image and prediction on ST7735 screen
-                    display.show_image_and_prediction(frame, sugar_level)
-                    
-                    # Keep display on for a few seconds
-                    if display.display_available:
-                        print("📺 Results displayed on screen for 5 seconds...")
-                        time.sleep(5)
-                        
-                        # Show waiting message again
-                        display.show_waiting_message()
-                        print("🔘 Ready for next capture - press button...")
-                    else:
-                        print("🔘 Ready for next capture - press button...")
-                
-                # Small delay to prevent excessive CPU usage while waiting
-                time.sleep(0.1)
-                
-            except KeyboardInterrupt:
-                break
-            except Exception as e:
-                print(f"❌ Error during capture cycle: {e}")
-                print("🔘 Ready for next capture - press button...")
-                display.show_waiting_message()
-                time.sleep(2)
+        # Predict sugar level
+        print("🔍 Analyzing image...")
+        sugar_level = predictor.predict_sugar_level(frame)
+        
+        # Display results on terminal
+        print("\n" + "="*40)
+        print("🍯 PREDICTION RESULT")
+        print("="*40)
+        print(f"Sugar Level: {sugar_level:.2f}")
+        print("="*40)
+        
+        # Display image and prediction on ST7735 screen
+        display.show_image_and_prediction(frame, sugar_level)
+        
+        # Keep display on for a few seconds
+        if display.display_available:
+            print("📺 Results displayed on screen for 10 seconds...")
+            time.sleep(10)
         
     except FileNotFoundError as e:
         print(f"❌ {e}")
         print("Make sure the model file exists and the path is correct.")
+    except KeyboardInterrupt:
+        print("\n⚠️ Interrupted by user")
     except Exception as e:
         print(f"❌ Unexpected error: {e}")
     finally:
         # Clean up
-        print("\n🛑 Shutting down...")
         if 'cap' in locals():
             cap.release()
-        if GPIO_AVAILABLE and GPIO_LIBRARY == "RPi.GPIO":
-            GPIO.cleanup()
-        print("✅ Cleanup completed!")
+        cleanup_gpio()
+        print("✅ Done!")
 
 if __name__ == "__main__":
     main()
