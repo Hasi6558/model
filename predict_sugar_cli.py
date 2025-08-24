@@ -6,13 +6,13 @@ import argparse
 import time
 from PIL import Image, ImageDraw, ImageFont
 
-# Try to import GPIO and ST7735 display (only available on Raspberry Pi)
+# Try to import gpiozero and ST7735 display (only available on Raspberry Pi)
 try:
-    import RPi.GPIO as GPIO
+    from gpiozero import Button
     GPIO_AVAILABLE = True
 except ImportError:
     GPIO_AVAILABLE = False
-    print("⚠️ RPi.GPIO not available (running on non-Pi system)")
+    print("⚠️ gpiozero not available (running on non-Pi system)")
 
 try:
     import st7735
@@ -30,8 +30,9 @@ image_size = (64, 64)  # Define image_size here
 # GPIO Configuration
 BUTTON_PIN = 17  # GPIO pin for the push button (change as needed)
 button_pressed = False
+button_obj = None  # Global button object
 
-def button_callback(channel):
+def button_callback():
     """Callback function for button press"""
     global button_pressed
     button_pressed = True
@@ -39,14 +40,19 @@ def button_callback(channel):
 
 def setup_button():
     """Setup GPIO button if available"""
+    global button_obj
+    
     if not GPIO_AVAILABLE:
-        print("⚠️ GPIO not available - button functionality disabled")
+        print("⚠️ gpiozero not available - button functionality disabled")
         return False
     
     try:
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-        GPIO.add_event_detect(BUTTON_PIN, GPIO.FALLING, callback=button_callback, bouncetime=300)
+        # Create button object with internal pull-up resistor
+        button_obj = Button(BUTTON_PIN, pull_up=True, bounce_time=0.3)
+        
+        # Assign callback function
+        button_obj.when_pressed = button_callback
+        
         print(f"✅ Button setup on GPIO pin {BUTTON_PIN}")
         return True
     except Exception as e:
@@ -55,9 +61,12 @@ def setup_button():
 
 def cleanup_gpio():
     """Clean up GPIO resources"""
-    if GPIO_AVAILABLE:
+    global button_obj
+    
+    if GPIO_AVAILABLE and button_obj is not None:
         try:
-            GPIO.cleanup()
+            button_obj.close()
+            print("✅ GPIO resources cleaned up")
         except:
             pass
 
